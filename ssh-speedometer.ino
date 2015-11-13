@@ -30,6 +30,7 @@ const int     REFRESH_RATE                  = 300;
 const int     DEBOUNCE_TIME                 = 30;      //milliseconds
 const int     DISPLAY_WAIT_TIME             = 1500;
 const int     BUTTON_HOLD_TIME              = 1500;
+const int     SENSOR_ERROR_TIME             = 1500;
 const long    MAX_MEASURE_TIME              = 1500000;  //microseconds
 const float   MIN_SPEED                     = 0;
 const float   MAX_SPEED                     = 30.0;
@@ -39,16 +40,28 @@ const byte    ARROW_DOWN                    = 1;
 const byte    ARROW_LEFT                    = 2;
 const byte    ARROW_RIGHT                   = 3;
 
+const byte    LEFT                          = 0;
+const byte    RIGHT                         = 1;
+
+const byte    NO_BUTTON_PRESSED             = 0;
+const byte    LEFT_BUTTON_PRESSED           = 1;
+const byte    RIGHT_BUTTON_PRESSED          = 2;
+const byte    BOTH_BUTTONS_PRESSED          = 3;
+
 // fine-tunable with a potmeter, so check the settings for precise distance
 // may differ 1 cm to either side
 const int     MIN_SENSOR_DISTANCE           = 275;      //millimeters
-const int     MAX_SENSOR_DISTANCE           = 325;      //milliseconds
+const int     MAX_SENSOR_DISTANCE           = 325;      //millimeters
 const int     HISTORY_SIZE                  = 100;
 
 // states
 const int     STATE_DEFAULT                 = 0;
 const int     STATE_HISTORY                 = 1;
 const int     STATE_SETTINGS                = 2;
+const int     STATE_DELETE                  = 3;
+const int     STATE_LEFT_SENSOR_ERROR       = 4;
+const int     STATE_RIGHT_SENSOR_ERROR      = 5;
+const int     STATE_BOTH_SENSORS_ERROR      = 6;
 
 // settings_display
 const int     SETTINGS                      = 0;
@@ -56,21 +69,18 @@ const int     SETTINGS_THRESHOLD            = 1;
 const int     SETTINGS_SENSOR_VALUES        = 2;
 const int     SETTINGS_DISTANCE             = 3;
 
+//initializing variables
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 int           state                         = STATE_DEFAULT;
 int           settingsDisplay               = SETTINGS;
-
-//initializing variables
-unsigned long leftSensorTime                = 0;
-unsigned long rightSensorTime               = 0;
-unsigned long screenTime                    = 0;
-int           leftButtonLastState           = LOW;
-int           rightButtonLastState          = LOW;
 int           writeIndex                    = -1;
-int           readIndex                     = 0;
-long          leftButtonDebounceTime        = 0;
-long          rightButtonDebounceTime       = 0;
-long          settingsScreenTime            = 0;
+int           readIndex                     = -1;
+byte          buttonState                   = NO_BUTTON_PRESSED;
+int           buttonLastState[2]            = {LOW, LOW};
+long          buttonDebounceTime[2]         = {0, 0};
+long          buttonHoldTime                = 0;
+
+unsigned long screenTime                    = 0;
 float         history[HISTORY_SIZE +1];
 
 // functions
@@ -117,57 +127,74 @@ void loop() {
  */
 void checkButtons() {
   // Debounce buttons
-  int leftButtonRead   = digitalRead( LEFT_BUTTON  );
-  int rightButtonRead  = digitalRead( RIGHT_BUTTON );
   
-  if ( leftButtonRead != leftButtonLastState ) {
-    leftButtonDebounceTime = millis();
-  }
-
-  if ( rightButtonRead != rightButtonLastState ) {
-    rightButtonDebounceTime = millis();
-  }
-
-  if ( ( millis() - leftButtonDebounceTime ) > DEBOUNCE_TIME ) {
-    leftButtonLastState = !leftButtonLastState;
-
-    //show settings when both buttons are pressed
-    if ( rightButtonRead == HIGH && leftButtonRead == HIGH ) {
-      state = STATE_DEFAULT;
-    } else if( leftButtonRead == HIGH ) {
-      if ( state == STATE_SETTINGS ) {
-         settingsDisplay < 3 ? settingsDisplay++ : 1;
-      } else if (state == STATE_HISTORY) {
-        readIndex > 0 ? readIndex-- : readIndex = HISTORY_SIZE;
-      } else {
-        state = STATE_HISTORY;
+  int buttonRead[2] = { digitalRead( LEFT_BUTTON ), digitalRead( RIGHT_BUTTON ) };
+  
+  for ( int index = 0; index < 2; index++ ) {
+    buttonRead[index] != buttonLastState[index] ? buttonDebounceTime[index] = millis() : 1;
+    if ( millis() - buttonHoldTime > BUTTON_HOLD_TIME ) {
+      if ( buttonState == BOTH_BUTTONS_PRESSED && state == STATE_HISTORY ) {
+        state       = STATE_DELETE;
+        buttonState = NO_BUTTON_PRESSED;
       }
-    }
-  }
+    } 
+    if ( millis() - buttonDebounceTime[index] > DEBOUNCE_TIME ) {
+      buttonLastState[index] = !buttonLastState[index];
 
-  if (  ( millis() - rightButtonDebounceTime ) > DEBOUNCE_TIME ) {
-    rightButtonLastState = !rightButtonLastState;
-
-    //show settings when both buttons are pressed
-    if ( rightButtonRead == HIGH && leftButtonRead == HIGH ) {
-      state = STATE_DEFAULT;
-    } else if ( rightButtonRead == HIGH ) {
-      if ( state == STATE_SETTINGS ) {
-        settingsDisplay > 0 ? settingsDisplay-- : 1;
-      } else if ( state == STATE_HISTORY ) {
-        readIndex < HISTORY_SIZE ? readIndex++ : readIndex = 0;
-      } else {
-        state = STATE_SETTINGS;
+      //show settings when both buttons are pressed
+      if ( buttonRead[RIGHT] == HIGH && buttonRead[LEFT] == HIGH ) {
+        buttonHoldTime  = millis();
+        buttonState     = BOTH_BUTTONS_PRESSED;
+      } else if ( buttonState == BOTH_BUTTONS_PRESSED ){
+        state       = STATE_DEFAULT;
+        buttonState = NO_BUTTON_PRESSED;
+      } else if( index == LEFT && buttonRead[index] == HIGH ) {
+        //buttonHoldTime  = millis();
+        buttonState     = LEFT_BUTTON_PRESSED;
+      } else if ( index == LEFT && buttonRead[LEFT] == LOW && buttonState == LEFT_BUTTON_PRESSED ) {
+        buttonState = NO_BUTTON_PRESSED;
+        if ( state == STATE_SETTINGS ) {
+          settingsDisplay > 0 ? settingsDisplay-- : 1;
+        } else if ( state == STATE_HISTORY ) {
+          readIndex > 0 ? readIndex-- : readIndex = HISTORY_SIZE;
+        } else if ( state == STATE_DELETE ) {
+          if ( readIndex > 0 ) {
+            history[readIndex] = -1.0;
+          } else {
+            emptyHistory();
+          }
+          state = STATE_HISTORY;
+        } else {
+          state = STATE_HISTORY;
+        }
+      } else if ( index == RIGHT && buttonRead[index] == HIGH ) {
+        //buttonHoldTime  = millis();
+        buttonState = RIGHT_BUTTON_PRESSED;        
+      } else if ( index == RIGHT && buttonRead[RIGHT] == LOW && buttonState == RIGHT_BUTTON_PRESSED ) {
+        buttonState = NO_BUTTON_PRESSED;
+        if ( state == STATE_SETTINGS ) {
+          settingsDisplay < 3 ? settingsDisplay++ : 1;
+        } else if ( state == STATE_HISTORY ) {
+          readIndex < HISTORY_SIZE ? readIndex++ : readIndex = 0;
+        } else if ( state == STATE_DELETE ){
+          state = STATE_HISTORY;
+        } else {
+          state = STATE_SETTINGS;
+        }
       }
     }
   }
 }
 
 void pollSensors() {
-  float speed = measureSpeed();
-  if ( speed > MIN_SPEED && speed < MAX_SPEED ) {
-    writeIndex < HISTORY_SIZE ? writeIndex++ : writeIndex = 0;
-    history[writeIndex] = speed;
+  int threshold = analogRead( THRESHOLD_POTMETER );
+
+  if ( state == STATE_DEFAULT || state == STATE_LEFT_SENSOR_ERROR || state == STATE_RIGHT_SENSOR_ERROR || state == STATE_BOTH_SENSORS_ERROR ) {
+    float speed = measureSpeed();
+    if ( speed > MIN_SPEED && speed < MAX_SPEED ) {
+      writeIndex < HISTORY_SIZE ? writeIndex++ : writeIndex = 0;
+      history[writeIndex] = speed;
+    }
   }
 }
 
@@ -192,18 +219,49 @@ void drawScreen() {
       break;
 
     case STATE_HISTORY :
-      lcd.print( "no." );
-      lcd.print( readIndex );
-      lcd.print( ": " );
-      if ( history[readIndex] > 0 ) {
-        lcd.print( history[readIndex] );
-        lcd.print( "m/s" );
+      if ( readIndex > 0 ) {
+        lcd.print( "no." );
+        lcd.print( readIndex );
+        lcd.print( ": " );
+        if ( history[readIndex] > 0 ) {
+          lcd.print( history[readIndex] );
+          lcd.print( "m/s" );
+        }
+      } else {
+        lcd.print( "All measurements" );
       }
       lcd.setCursor( 0,1 );
       lcd.print( "avg: " );
       lcd.print( getAverage() );
       lcd.print( "m/s" );
       break;
+
+    case STATE_DELETE :
+      lcd.print( "    Delete?     " );
+      lcd.setCursor( 0,1 );
+      lcd.write( ARROW_LEFT );
+      lcd.print( " Yes   |   No " );
+      lcd.write( ARROW_RIGHT );
+      break;
+
+    case STATE_LEFT_SENSOR_ERROR :
+      lcd.print( "  Error! Left   " );
+      lcd.setCursor( 0,1 );
+      lcd.print( "sensor blocked! " );
+      break;
+      
+    case STATE_RIGHT_SENSOR_ERROR :
+      lcd.print( "  Error! Right  " );
+      lcd.setCursor( 0,1 );
+      lcd.print( "sensor blocked! " );
+      break; 
+         
+    case STATE_BOTH_SENSORS_ERROR :
+      lcd.print( "   Error! Both  " );
+      lcd.setCursor( 0,1 );
+      lcd.print( "sensors blocked!" );
+      break;    
+      
   }
 }
 
@@ -211,9 +269,11 @@ void drawSettings (){
   switch ( settingsDisplay ) {
         
     case SETTINGS :
-      lcd.print( "Settings" );
+      lcd.print( "    Settings    " );
+      lcd.setCursor( 11, 1 );
+      lcd.write( ARROW_UP );
       lcd.setCursor( 15, 1 );
-      lcd.write(ARROW_DOWN);
+      lcd.write( ARROW_DOWN );
           
       break;
           
@@ -221,12 +281,12 @@ void drawSettings (){
       lcd.print( "Threshold: " );
       lcd.print( analogRead ( THRESHOLD_POTMETER ) );
       lcd.setCursor( 15, 0 );
-      lcd.write(ARROW_UP);
+      lcd.write( ARROW_UP );
 
       lcd.setCursor( 4, 1 );
-      lcd.write(ARROW_DOWN);
+      lcd.write( ARROW_DOWN );
       lcd.setCursor( 15, 1 );
-      lcd.write(ARROW_DOWN);
+      lcd.write( ARROW_DOWN );
 
       break;
           
@@ -256,6 +316,7 @@ void drawSettings (){
       lcd.write( ARROW_DOWN );
 
       break;
+      
   }
 }
 /**
@@ -266,9 +327,9 @@ float getAverage() {
   int   count = 0;
   float total = 0.0f;
   
-  for ( int i = 0; i < HISTORY_SIZE; i++ ) {
-    if ( history[i] > 0 ){
-      total += history[i];
+  for ( int index = 0; index < HISTORY_SIZE; index++ ) {
+    if ( history[index] > 0 ){
+      total += history[index];
       count++;
     }
   }
@@ -280,9 +341,10 @@ float getAverage() {
  * Clears every entry of the table
  */
 void emptyHistory() {
-  for ( int i = 0; i < HISTORY_SIZE; i++ ){
-    history[i] = 0.0f;
+  for ( int index = 0; index < HISTORY_SIZE; index++ ){
+    history[index] = 0.0f;
   }
+  writeIndex = 0;
 }
 
 /**
@@ -293,26 +355,42 @@ void emptyHistory() {
  * @return measured speed
  */
 float measureSpeed() {
-  int lightThreshold  = analogRead( THRESHOLD_POTMETER );
-  rightSensorTime      = 0;
+  int   threshold   = analogRead( THRESHOLD_POTMETER );
+  long  sensorTime  = -1;
   
   //start reading
-  if ( analogRead( LEFT_SENSOR ) < lightThreshold ) {
-    leftSensorTime = micros();
-
-    //finish reading within MAX_MEASURE_TIME
-    while ( ( micros() - leftSensorTime ) < MAX_MEASURE_TIME ) {
-      if ( analogRead( RIGHT_SENSOR ) < lightThreshold ) {
-        return ( getSensorDistance() * ( 1000000.0f / ( micros() - leftSensorTime ) ) ) / 1000;
+  for ( int index = 0; index < 2; index++ ) {
+    if ( analogRead( (int[2]){LEFT_SENSOR, RIGHT_SENSOR}[index] ) < threshold ) {
+      sensorTime = micros();
+    
+      //finish reading within MAX_MEASURE_TIME
+      while ( micros() - sensorTime < MAX_MEASURE_TIME ) {
+        if ( analogRead( (int[2]){RIGHT_SENSOR, LEFT_SENSOR}[index] ) < threshold ) {
+          float result = ( getSensorDistance() * ( 1000000.0f / ( micros() - sensorTime ) ) ) / 1000;
+          delay(200);
+          return result;
+        }
       }
-    }
 
-    if ( state == STATE_DEFAULT ) {
-      lcd.clear();
-      lcd.print( "unclear reading." );
-      delay( DISPLAY_WAIT_TIME );
+      if ( analogRead( (int[2]) {LEFT_SENSOR, RIGHT_SENSOR}[index] ) < threshold ) {
+        if ( state == (int[2]) {RIGHT_SENSOR, LEFT_SENSOR}[index] ) {
+          state = STATE_BOTH_SENSORS_ERROR;
+        } else {
+          state = (int[2]){STATE_LEFT_SENSOR_ERROR, STATE_RIGHT_SENSOR_ERROR}[index];
+        }
+        sensorTime  = -1;
+      }
+    } else if ( state == (int[2]){STATE_LEFT_SENSOR_ERROR, STATE_RIGHT_SENSOR_ERROR}[index] ) {
+      state = STATE_DEFAULT;
     }
   }
+
+  if ( sensorTime > 0 ) {
+    lcd.clear();
+    lcd.print( "unclear reading." );
+    delay( DISPLAY_WAIT_TIME );
+  }
+
   return -1.0f;
 }
 
