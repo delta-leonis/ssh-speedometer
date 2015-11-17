@@ -72,54 +72,85 @@ const unsigned char   RIGHT_BUTTON_PRESSED          = 2;
 const unsigned char   BOTH_BUTTONS_PRESSED          = 3;
 
 // The distance between the sensors is adjustable between these two values
-const int             MIN_SENSOR_DISTANCE           = 275;      // millimeters
-const int             MAX_SENSOR_DISTANCE           = 325;      // millimeters
+const short           MIN_SENSOR_DISTANCE           = 275;      // millimeters
+const short           MAX_SENSOR_DISTANCE           = 325;      // millimeters
 
 // The maximum amount of speed values saved to memory
-const int             HISTORY_SIZE                  = 100;
+const unsigned char   HISTORY_SIZE                  = 100;
 
 //    System states
 
 // The default state, in this state, measurements will be done constantly
-const int             STATE_DEFAULT                 = 0;
+const unsigned char   STATE_DEFAULT                 = 0;
 
 // In this state, the user can scroll through previous measurements
-const int             STATE_HISTORY                 = 1;
+const unsigned char   STATE_HISTORY                 = 1;
+
+const unsigned char   STATE_HISTORY_MENU            = 2;
 
 // In this state, the user can scroll through settings.
-const int             STATE_SETTINGS                = 2;
+const unsigned char   STATE_SETTINGS                = 3;
+
+// In this state, the element at readIndex will be replaced by
+const unsigned char   STATE_REPLACE                 = 4;
+
+// When a measurement is done, a question is raised if you want to replace the
+// old value with the new one.
+const unsigned char   STATE_REPLACE_QUESTION        = 5;
 
 // In this state, the user is asked if he is sure he wants to delete a
 // measurement
-const int             STATE_DELETE                  = 3;
+const unsigned char   STATE_REMOVE                  = 6;
 
 // If a sensor is blocked, the system goes to an error state
-const int             STATE_LEFT_SENSOR_ERROR       = 4;
-const int             STATE_RIGHT_SENSOR_ERROR      = 5;
-const int             STATE_BOTH_SENSORS_ERROR      = 6;
+const unsigned char   STATE_LEFT_SENSOR_ERROR       = 7;
+const unsigned char   STATE_RIGHT_SENSOR_ERROR      = 8;
+const unsigned char   STATE_BOTH_SENSORS_ERROR      = 9;
 
 //    settings_display
 //    used to determine which setting should be displayd.
 
 // No particular setting is shown here, but only the text "Settings"
-const int             SETTINGS                      = 0;
+const unsigned char   SETTINGS                      = 0;
 
 // Here the threshold is shown.
-const int             SETTINGS_THRESHOLD            = 1;
+const unsigned char   SETTINGS_THRESHOLD            = 1;
 
 // Here the sensor readings are shown
-const int             SETTINGS_SENSOR_VALUES        = 2;
+const unsigned char   SETTINGS_SENSOR_VALUES        = 2;
 
 // Here the distance between sensors is shown.
-const int             SETTINGS_DISTANCE             = 3;
+const unsigned char   SETTINGS_DISTANCE             = 3;
+
+//    history menu display
+//    used to determine which setting should be displayed.
+
+// No particular posibility is shown here but the text "History".
+const unsigned char   HISTORY_BACK                  = 0;
+
+// This gives the posibility to replace the current element.
+const unsigned char   HISTORY_REPLACE               = 1;
+
+// This gives the posibility to remove the current element.
+const unsigned char   HISTORY_REMOVE                = 2;
+
+// This gives the posibility to remove all elements.
+const unsigned char   HISTORY_REMOVE_ALL            = 3;
+
+// this gives the posibility to send the current element to another device
+// over USB
+const unsigned char   HISTORY_USB_SEND              = 4;
+
+// this gives the posibility to send all elements to another device over USB
+const unsigned char   HISTORY_USB_SEND_ALL          = 5;
 
 //    Initializing variables
 
 // The current state of the system
-int                   state                         = STATE_DEFAULT;
+unsigned char         state                         = STATE_DEFAULT;
 
 // The current setting on display
-int                   settingsDisplay               = SETTINGS;
+ unsigned char        subState                      = SETTINGS;
 
 // The index of the element in the list which should be written when a
 // measurement is done. It is not always the last element because this gives
@@ -127,12 +158,12 @@ int                   settingsDisplay               = SETTINGS;
 // clearing the entire list. Starts at -1 because the index is incremented
 // before writing the element. This is done because it minimalizes code at
 // other places
-int                   writeIndex                    = -1;
+short                 writeIndex                    = -1;
 
 // The index of the element in the list that is being read. Used in the history
 // state. Initialized at -1 because this resembles "All readings" in history
 // menu.
-int                   readIndex                     = -1;
+short                 readIndex                     = -1;
 
 // The previous state of each button (so the state while debouncing)
 unsigned char         buttonLastState[2]            = { LOW, LOW };
@@ -180,7 +211,7 @@ void setupDisplay ( ) {
     { 0x00, 0x04, 0x02, 0x1F, 0x02, 0x04, 0x00, 0x00 } };   // arrow right
 
   // creating the custom characters
-  for ( int index = 0; index < 4; index++ ) {
+  for ( unsigned char index = 0; index < 4; index++ ) {
     lcd.createChar ( index, icons[index] );
   }
 
@@ -224,12 +255,21 @@ void pollButtons ( ) {
 
     // When a button is hold for more than a certain amount of time
     if ( millis ( ) - buttonHoldTime > BUTTON_HOLD_TIME ) {
-      // When both buttons are hold in the history state, an element shoulc be
-      // deleted, so this will be the next state.
-      if ( buttonState == BOTH_BUTTONS_PRESSED && state == STATE_HISTORY ) {
-        state       = STATE_DELETE;
-        buttonState = NO_BUTTON_PRESSED;
+      // When both buttons are hold in the history state, an pop up menu is
+      // shown which gives you the choice wat to do with the current element.
+      if (  buttonState == BOTH_BUTTONS_PRESSED &&
+            state       == STATE_HISTORY        &&
+            readIndex   >= 0                        ) {
+        // when both buttons are hold and the history state is active, a option
+        // menu will be opened.
+        state = STATE_HISTORY_MENU;
+      } else if ( buttonState == RIGHT_BUTTON_PRESSED &&
+                  state       == STATE_HISTORY_MENU ) {
+        // when a button is hold for a certain amount of time, this function
+        // is called
+        rightButtonHold();
       }
+      buttonState = NO_BUTTON_PRESSED;
     }
 
     // When a button is pressed and released within a certain amount of time
@@ -238,63 +278,152 @@ void pollButtons ( ) {
 
       //    State logic
       if ( buttonRead[RIGHT] == HIGH && buttonRead[LEFT] == HIGH ) {
+
+        // current system time is set. This is needed to check how long a button
+        // was hold.
         buttonHoldTime  = millis ( );
         buttonState     = BOTH_BUTTONS_PRESSED;
-      } else if ( buttonState == BOTH_BUTTONS_PRESSED ){
-        state       = STATE_DEFAULT;
-        buttonState = NO_BUTTON_PRESSED;
-      } else if( index == LEFT && buttonRead[index] == HIGH ) {
+      } else if ( buttonState       == BOTH_BUTTONS_PRESSED ){
+
+        // run function on both button release
+        bothButtonsPressed ( );
+      } else if ( index             == LEFT   &&
+                  buttonRead[index] == HIGH ) {
+
+        // current system time is set. This is needed to check how long a button
+        // was hold.
+        buttonHoldTime  = millis ( );
         buttonState     = LEFT_BUTTON_PRESSED;
-      } else if ( index             == LEFT &&
-                  buttonRead[LEFT]  == LOW  &&
+      } else if ( index             == LEFT   &&
+                  buttonRead[LEFT]  == LOW    &&
                   buttonState       == LEFT_BUTTON_PRESSED ) {
-        // When the left button is released
-        buttonState = NO_BUTTON_PRESSED;
-        if ( state == STATE_SETTINGS ) {
-          // when the left button is pressed in the settings state, the settings
-          // on display will scroll up, unless it is already at the top.
-          settingsDisplay > 0 ? settingsDisplay-- : 1;
-        } else if ( state == STATE_HISTORY ) {
-          // when the left butten is pressed in the history state, the display
-          // will scroll up, unless it is at the top. Then it will start at -1.
-          // -1 because this is seen as the index for "All measurements".
-          readIndex > -1 ? readIndex-- : readIndex = history.size() - 1;
-        } else if ( state == STATE_DELETE ) {
-          // if the index == -1 then all the history will be cleared. else the
-          // element at readIndex will be removed.
-          if ( readIndex >= 0 ) {
-            history.remove ( readIndex );
-            readIndex == history.size ( ) ? readIndex-- : 1;
-          } else {
-            emptyHistory();
-          }
-          state = STATE_HISTORY;
-        } else {
-          state = STATE_HISTORY;
-        }
-      } else if ( index             == RIGHT &&
+
+        // run function on button release
+        leftButtonPressed ( );
+      } else if ( index             == RIGHT  &&
                   buttonRead[index] == HIGH      ) {
-        buttonState = RIGHT_BUTTON_PRESSED;
+
+        buttonHoldTime  = millis ( );
+        buttonState     = RIGHT_BUTTON_PRESSED;
       } else if ( index             == RIGHT  &&
                   buttonRead[RIGHT] == LOW    &&
                   buttonState       == RIGHT_BUTTON_PRESSED ) {
-        // When the right button is released
-        buttonState = NO_BUTTON_PRESSED;
-        if ( state == STATE_SETTINGS ) {
-          // The settingsdisplay will scroll down if it is not already at the
-          // bottom
-          settingsDisplay < 3 ? settingsDisplay++ : 1;
-        } else if ( state == STATE_HISTORY ) {
-          // The history display will scroll down if it is not already at the
-          // bottom. Else it will become -1 (All measurements)
-          readIndex < history.size ( ) - 1 ? readIndex++ : readIndex = -1;
-        } else if ( state == STATE_DELETE ){
-          state = STATE_HISTORY;
-        } else {
-          state = STATE_SETTINGS;
-        }
+
+        // run function on button release
+        rightButtonPressed ( );
       }
     }
+  }
+}
+
+/**
+ * When the right button is pressed and released within a certain amount of time
+ */
+void rightButtonPressed ( ) {
+  // When the right button is released
+  buttonState     = NO_BUTTON_PRESSED;
+  if ( state == STATE_SETTINGS ) {
+    // The subState will scroll down if it is not already at the
+    // bottom
+    subState < 3 ? subState++ : 1;
+  } else if ( state == STATE_HISTORY ) {
+    // The history display will scroll down if it is not already at the
+    // bottom. Else it will become -1 (All measurements)
+    if ( history.size ( ) > 0 ) {
+      readIndex < history.size ( ) - 1 ? readIndex++ : readIndex = 0;
+    }
+
+  } else if ( state == STATE_HISTORY_MENU ) {
+    // scroll through the state history menu
+    subState < 5 ? subState++ : 1;
+  } else if ( state == STATE_REPLACE ) {
+  } else if ( state == STATE_REPLACE_QUESTION ) {
+    history.remove ( readIndex );
+    state = STATE_HISTORY;
+  } else if ( state == STATE_REMOVE ) {
+    state = STATE_HISTORY;
+  } else {
+    state = STATE_SETTINGS;
+  }
+}
+
+/**
+ * When the left button is pressed and released within a certain amount of time
+ */
+void leftButtonPressed ( ) {
+  // When the left button is released
+  buttonState     = NO_BUTTON_PRESSED;
+  if ( state == STATE_SETTINGS || state == STATE_HISTORY_MENU ) {
+    // when the left button is pressed in the settings state, the settings
+    // on display will scroll up, unless it is already at the top.
+    subState > 0 ? subState-- : 1;
+  } else if ( state == STATE_HISTORY ) {
+    // when the left butten is pressed in the history state, the display
+    // will scroll up, unless it is at the top. Then it will start at -1.
+    // -1 because this is seen as the index for "All measurements".
+    readIndex > 0 ? readIndex-- : readIndex = history.size() - 1;
+  } else if ( state == STATE_REPLACE ) {
+  } else if ( state == STATE_REPLACE_QUESTION ) {
+    history.remove ( readIndex + 1 );
+    state = STATE_HISTORY;
+  } else if ( state == STATE_REMOVE ) {
+    // if the index == -1 then all the history will be cleared. else the
+    // element at readIndex will be removed.
+    if ( readIndex >= 0 ) {
+      history.remove ( readIndex );
+      readIndex == history.size ( ) ? readIndex-- : 1;
+    } else {
+      clearHistory();
+    }
+    state = STATE_HISTORY;
+  } else {
+    state = STATE_HISTORY;
+  }
+}
+
+/**
+ * when both buttons are pressed at the same time and released within a certain
+ * amount of time, this function is called.
+ */
+void bothButtonsPressed ( ) {
+  switch ( state ) {
+    case STATE_HISTORY_MENU :
+    case STATE_REPLACE      :
+      // when the state is replace or history menu, than it should return to
+      // history
+      state = STATE_HISTORY;
+      break;
+
+    case default :
+      // in other cases it should return to live measurement
+      state = STATE_DEFAULT;
+  }
+  state       = ( state == STATE_HISTORY_MENU ) ? STATE_HISTORY : STATE_DEFAULT;
+  subState    = 0;
+  buttonState = NO_BUTTON_PRESSED;
+}
+
+/**
+ * this function will be called when the right button is hold for a certain
+ * amount of time.
+ */
+void rightButtonHold ( ) {
+  switch ( subState ) {
+    case HISTORY_REPLACE :
+      state = STATE_REPLACE;
+
+      break;
+    case HISTORY_REMOVE :
+      state = STATE_REMOVE;
+
+      break;
+    case HISTORY_REMOVE_ALL :
+      readIndex = -1;
+      state     = STATE_REMOVE;
+
+      break;
+    default :
+      state     = STATE_HISTORY;
   }
 }
 
@@ -307,21 +436,36 @@ void pollSensors ( ) {
   if (  state == STATE_DEFAULT            ||
         state == STATE_LEFT_SENSOR_ERROR  ||
         state == STATE_RIGHT_SENSOR_ERROR ||
-        state == STATE_BOTH_SENSORS_ERROR   ) {
+        state == STATE_BOTH_SENSORS_ERROR ||
+        state == STATE_REPLACE               ) {
 
     // A speed measurement is now tried
     float speed = measureSpeed();
 
     // The speed should be between certain values
     if ( speed > MIN_SPEED && speed < MAX_SPEED ) {
-      // if a measurement was done, the write index is incremented
-      writeIndex < HISTORY_SIZE - 1 ? writeIndex++ : writeIndex = 0;
+      if ( state == STATE_REPLACE ) {
+        // When replacing a value, it is temporarily inserted instead of added
+        // or directly replacing the element at the writeIndex. Later the choice
+        // is given to delete the inserted value or the element originally on
+        // that index
+        history.add( readIndex, speed );
 
-      // the system checks if the list element already exists
-      if ( history.get ( writeIndex ) ) {
-        history.set ( writeIndex, speed );
+        state = STATE_REPLACE_QUESTION;
       } else {
-        history.add ( speed );
+        // if a measurement was done, the write index is incremented
+        writeIndex < HISTORY_SIZE - 1 ? writeIndex++ : writeIndex = 0;
+
+        // if there where no measurements already, the readIndex should be set.
+        // readIndex = -1 means "history empty"
+        readIndex < 0 ? readIndex = 0 : 1;
+
+        // the system checks if the list element already exists
+        if ( history.get ( writeIndex ) ) {
+          history.set ( writeIndex, speed );
+        } else {
+          history.add ( speed );
+        }
       }
     }
   }
@@ -362,19 +506,47 @@ void refreshDisplay ( ) {
         lcd.print ( ": " );
         lcd.print ( history.get ( readIndex ) );
         lcd.print ( "m/s" );
+
+        lcd.setCursor ( 0, 1 );
+        lcd.print ( "Avg: " );
+        lcd.print ( getAverage ( ) );
+        lcd.print ( "m/s" );
       } else {
-        lcd.print ( "All measurements" );
+        lcd.print ( "No measurements" );
       }
+
+      break;
+
+    // In this state, the history pop-up menu is shown.
+    case STATE_HISTORY_MENU :
+      drawHistoryMenu();
+
+      break;
+
+      // In this state, the choice is given if you want to overwrite the
+      // selected element
+    case STATE_REPLACE :
+
+      lcd.print ( "  Measurement   " );
       lcd.setCursor ( 0, 1 );
-      lcd.print ( "Avg: " );
-      lcd.print ( getAverage ( ) );
-      lcd.print ( "m/s" );
+      lcd.print ( "   pending..    " );
+
+      break;
+
+    case STATE_REPLACE_QUESTION :
+
+      lcd.print ( "Replace by " );
+      lcd.print ( history.get ( readIndex ) );
+      lcd.setCursor ( 0, 1 );
+      lcd.write ( ARROW_LEFT );
+      lcd.print ( " Yes   |   No " );
+      lcd.write ( ARROW_RIGHT );
 
       break;
 
     // In this state, the choice is given if you want to delete the selected
     // element(s)
-    case STATE_DELETE :
+    case STATE_REMOVE :
       lcd.print ( "    Delete?     " );
       lcd.setCursor ( 0, 1 );
       lcd.write ( ARROW_LEFT );
@@ -414,7 +586,7 @@ void refreshDisplay ( ) {
  * has it's own function.
  */
 void drawSettings (){
-  switch ( settingsDisplay ) {
+  switch ( subState ) {
 
     // when the settings menu is opened it starts of with showing it actually
     // is in the settings menu.
@@ -473,21 +645,120 @@ void drawSettings (){
       break;
   }
 }
+
+void drawHistoryMenu ( ) {
+  switch ( subState ) {
+    // when the settings menu is opened it starts of with showing it actually
+    // is in the settings menu.
+    case HISTORY_BACK :
+
+      lcd.write ( ARROW_RIGHT );
+      lcd.print ( "   ..History   " );
+
+      lcd.setCursor ( 0, 1 );
+      lcd.print ( " Replace cur   " );
+      lcd.write ( ARROW_DOWN );
+
+      break;
+
+    case HISTORY_REPLACE :
+
+      lcd.print ( "    ..History  " );
+      lcd.setCursor ( 15, 0 );
+      lcd.write ( ARROW_UP );
+
+      lcd.setCursor ( 0, 1 );
+      lcd.write ( ARROW_RIGHT );
+      lcd.print ( "Replace cur   " );
+
+      lcd.setCursor ( 15, 1 );
+      lcd.write ( ARROW_DOWN );
+
+      break;
+
+    // Here the current threshold is shown. The theshold can be modified by
+    // turning the middle potentiometer.
+    case HISTORY_REMOVE :
+
+      lcd.write ( ARROW_RIGHT );
+      lcd.print ( "Remove current " );
+      lcd.setCursor ( 15, 0 );
+      lcd.write ( ARROW_UP );
+
+      lcd.setCursor ( 0, 1 );
+      lcd.print ( " Remove all    ");
+      lcd.setCursor ( 15, 1 );
+      lcd.write ( ARROW_DOWN );
+
+      break;
+
+    // here the current readings of both sensors is displayed.
+    case HISTORY_REMOVE_ALL :
+
+      lcd.print ( " Remove current " );
+      lcd.setCursor ( 15, 0 );
+      lcd.write ( ARROW_UP );
+
+      lcd.setCursor ( 0, 1 );
+      lcd.write ( ARROW_RIGHT );
+      lcd.print ( "Remove all    ");
+      lcd.setCursor ( 15, 1 );
+      lcd.write ( ARROW_DOWN );
+
+      break;
+
+      // Here the current threshold is shown. The theshold can be modified by
+      // turning the middle potentiometer.
+      case HISTORY_USB_SEND :
+
+        lcd.write ( ARROW_RIGHT );
+        lcd.print ( "Send over USB " );
+        lcd.setCursor ( 15, 0 );
+        lcd.write ( ARROW_UP );
+
+        lcd.setCursor ( 0, 1 );
+        lcd.print ( " Send all");
+        lcd.write ( ARROW_RIGHT );
+        lcd.print ( " USB");
+        lcd.setCursor ( 15, 1 );
+        lcd.write ( ARROW_DOWN );
+
+        break;
+
+      // here the current readings of both sensors is displayed.
+      case HISTORY_USB_SEND_ALL :
+
+        lcd.print ( " Send over USB " );
+        lcd.setCursor ( 15, 0 );
+        lcd.write ( ARROW_UP );
+
+        lcd.setCursor ( 0, 1 );
+        lcd.write ( ARROW_RIGHT );
+        lcd.print ( "Send all");
+        lcd.write ( ARROW_RIGHT );
+        lcd.print ( " USB");
+        lcd.setCursor ( 15, 1 );
+        lcd.write ( ARROW_DOWN );
+
+        break;
+  }
+}
+
 /**
  * Calculates average speed from history list
  *
  * @return average of history list
  */
-float getAverage() {
+float getAverage ( ) {
   // the history size is determined once
-  int   historySize = history.size();
-  int   count       = 0;
+  short historySize = history.size ( );
+  short count       = 0;
   float total       = 0.0f;
 
   // all elements of the history list are added up and the number of elements
   // is counted.
-  for ( int index = 0; index < historySize; index++ ) {
-    total += history.get(index);
+  for ( short index = 0; index < historySize; index++ ) {
+    total += history.get ( index );
     count++;
   }
 
@@ -496,12 +767,12 @@ float getAverage() {
 }
 
 /**
- * Deletes every entry of the table and resets the indexes
+ * Deletes every entry of the table and resets the write index. The readIndex
+ * is already -1 when clearHistory function is called.
  */
-void emptyHistory() {
-  history.clear();
+void clearHistory ( ) {
+  history.clear ( );
   writeIndex  = -1;
-  readIndex   = -1;
 }
 
 /**
@@ -511,12 +782,12 @@ void emptyHistory() {
  * @return measured speed
  */
 float measureSpeed() {
-  int   threshold       = analogRead( THRESHOLD_POTMETER );
-  int   sensorDistance  = getSensorDistance();
+  short threshold       = analogRead( THRESHOLD_POTMETER );
+  short sensorDistance  = getSensorDistance();
   long  sensorTime      = -1;
 
   //start reading
-  for ( int index = 0; index < 2; index++ ) {
+  for ( unsigned char index = 0; index < 2; index++ ) {
     // trigger on reading higher than the threshold.
     if ( analogRead( (int[2]){ LEFT_SENSOR,
                                RIGHT_SENSOR }[index] ) < threshold ) {
@@ -575,7 +846,7 @@ float measureSpeed() {
  * defined in SENSOR_DISTANCE_BASE and SENSOR_CALIBRATE_LENTH
  * @return distance between sensors
  */
-int getSensorDistance() {
+short getSensorDistance() {
   return map( analogRead( DISTANCE_POTMETER ), 0, 1024,
               MIN_SENSOR_DISTANCE, MAX_SENSOR_DISTANCE );
 }
